@@ -15,12 +15,13 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ''';
 
-const kDefaultTunnelName = 'Michaels-PC';
+String get kDefaultTunnelName => Platform.isWindows ? 'Michaels-PC' : 'wg0';
+
 const _serverIp = '45.76.177.181';
 const _wgExe = r'C:\Program Files\WireGuard\wireguard.exe';
 
 class LocalVpnService {
-  String _tunnelName = kDefaultTunnelName;
+  String _tunnelName = Platform.isWindows ? 'Michaels-PC' : 'wg0';
   String _wgConfig = kDefaultWgConfig;
 
   String get tunnelName => _tunnelName;
@@ -41,17 +42,17 @@ class LocalVpnService {
   }
 
   Future<int?> pingServer() async {
+    if (Platform.isIOS || Platform.isAndroid) return null;
     try {
-      final result = await Process.run(
-        'ping', ['-n', '1', '-w', '2000', _serverIp],
-        runInShell: true,
-      );
+      final args = Platform.isWindows
+          ? ['-n', '1', '-w', '2000', _serverIp]
+          : ['-c', '1', '-t', '3', _serverIp];
+      final result = await Process.run('ping', args, runInShell: Platform.isWindows);
       final output = result.stdout.toString();
-      final match = RegExp(r'Average\s*=\s*(\d+)ms|time[<=](\d+)ms', caseSensitive: false)
-          .firstMatch(output);
-      if (match != null) {
-        return int.tryParse(match.group(1) ?? match.group(2) ?? '');
-      }
+      final match = Platform.isWindows
+          ? RegExp(r'Average\s*=\s*(\d+)ms', caseSensitive: false).firstMatch(output)
+          : RegExp(r'round-trip[^=]+=\s*[\d.]+/([\d.]+)', caseSensitive: false).firstMatch(output);
+      if (match != null) return double.tryParse(match.group(1) ?? '')?.round();
       return null;
     } catch (_) {
       return null;
@@ -59,31 +60,41 @@ class LocalVpnService {
   }
 
   Future<bool> isVpnConnected() async {
-    final result = await Process.run(
-      'sc', ['query', 'WireGuardTunnel\$$_tunnelName'],
-      runInShell: false,
-    );
-    return result.stdout.toString().contains('RUNNING');
+    if (Platform.isIOS || Platform.isAndroid) return false;
+    try {
+      if (Platform.isWindows) {
+        final r = await Process.run('sc', ['query', 'WireGuardTunnel\$$_tunnelName']);
+        return r.stdout.toString().contains('RUNNING');
+      }
+      // macOS: wg show exits 0 and prints interface info when up
+      final r = await Process.run('wg', ['show', _tunnelName]);
+      return r.exitCode == 0 && r.stdout.toString().trim().isNotEmpty;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<String> connect() async {
+    if (Platform.isIOS || Platform.isAndroid) {
+      return 'Local VPN control not supported on mobile.\nUse the WireGuard app to connect.';
+    }
+    if (Platform.isWindows) return _connectWindows();
+    return _connectMacOS();
+  }
+
+  Future<String> _connectWindows() async {
     if (!File(_wgExe).existsSync()) {
       return 'WireGuard not found at $_wgExe\nInstall WireGuard from wireguard.com first.';
     }
-
-    // Silently stop + remove any existing tunnel via sc.exe (avoids WireGuard help dialog)
     if (await isVpnConnected()) {
       await Process.run('sc', ['stop', 'WireGuardTunnel\$$_tunnelName']);
       await Future.delayed(const Duration(milliseconds: 800));
       await Process.run('sc', ['delete', 'WireGuardTunnel\$$_tunnelName']);
       await Future.delayed(const Duration(milliseconds: 500));
     }
-
     final confPath = '${Directory.systemTemp.path}\\$_tunnelName.conf';
     await File(confPath).writeAsString(_wgConfig);
-
     final result = await Process.run(_wgExe, ['/installtunnelservice', confPath]);
-
     if (result.exitCode == 0) {
       for (var i = 0; i < 6; i++) {
         await Future.delayed(const Duration(milliseconds: 500));
@@ -91,21 +102,51 @@ class LocalVpnService {
       }
       return 'Tunnel installed — waiting for connection...';
     }
-
     final err = result.stderr.toString().trim();
     return 'Connect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
   }
 
-  Future<String> disconnect() async {
-    if (!File(_wgExe).existsSync()) {
-      return 'WireGuard not found at $_wgExe';
+  Future<String> _connectMacOS() async {
+    final which = await Process.run('which', ['wg-quick']);
+    if (which.exitCode != 0) {
+      return 'wg-quick not found.\n'
+          'Install WireGuard tools:\n  brew install wireguard-tools\n\n'
+          'Or use the WireGuard app from the Mac App Store.';
     }
-
-    final result = await Process.run(_wgExe, ['/uninstalltunnelservice', _tunnelName]);
-
-    if (result.exitCode == 0) return 'Disconnected';
-
+    final confPath = '/tmp/$_tunnelName.conf';
+    await File(confPath).writeAsString(_wgConfig);
+    // osascript elevates to admin — prompts user for password
+    final script = 'do shell script "wg-quick up $confPath" with administrator privileges';
+    final result = await Process.run('osascript', ['-e', script]);
+    if (result.exitCode == 0) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (await isVpnConnected()) return 'Connected';
+      return 'Tunnel starting...';
+    }
     final err = result.stderr.toString().trim();
+    if (err.contains('User canceled')) return 'Cancelled by user.';
+    return 'Connect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
+  }
+
+  Future<String> disconnect() async {
+    if (Platform.isIOS || Platform.isAndroid) {
+      return 'Use the WireGuard app to disconnect.';
+    }
+    if (Platform.isWindows) {
+      if (!File(_wgExe).existsSync()) return 'WireGuard not found at $_wgExe';
+      final result = await Process.run(_wgExe, ['/uninstalltunnelservice', _tunnelName]);
+      if (result.exitCode == 0) return 'Disconnected';
+      final err = result.stderr.toString().trim();
+      return 'Disconnect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
+    }
+    // macOS
+    final which = await Process.run('which', ['wg-quick']);
+    if (which.exitCode != 0) return 'wg-quick not found.';
+    final script = 'do shell script "wg-quick down $_tunnelName" with administrator privileges';
+    final result = await Process.run('osascript', ['-e', script]);
+    if (result.exitCode == 0) return 'Disconnected';
+    final err = result.stderr.toString().trim();
+    if (err.contains('User canceled')) return 'Cancelled by user.';
     return 'Disconnect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
   }
 }

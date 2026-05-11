@@ -43,3 +43,13 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# iOS / macOS CocoaPods
+**/ios/Pods/
+**/macos/Pods/
+**/ios/.symlinks/
+**/macos/.symlinks/
+**/ios/Flutter/.last_build_id
+**/Podfile.lock
+**/xcuserdata/
+**/xcshareddata/xcbaselines/
