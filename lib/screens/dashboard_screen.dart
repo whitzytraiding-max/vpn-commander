@@ -1,5 +1,7 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../providers/vpn_provider.dart';
 import '../theme/colors.dart';
 import '../widgets/steam_card.dart';
@@ -194,9 +196,57 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
     });
   }
 
+  void _showQr(BuildContext context) {
+    final config = widget.prov.localVpn.wgConfig;
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: kBgDark,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(4),
+          side: const BorderSide(color: kBrass),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SteamLabel('Scan with WireGuard App'),
+              const SizedBox(height: 16),
+              Container(
+                color: Colors.white,
+                padding: const EdgeInsets.all(12),
+                child: QrImageView(
+                  data: config,
+                  version: QrVersions.auto,
+                  size: 240,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Open WireGuard → + → Create from QR code',
+                style: TextStyle(color: kParchDim, fontSize: 11),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              SteamButton(
+                label: 'Close',
+                small: true,
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final connected = widget.prov.vpnConnected;
+    final isiOS = Platform.isIOS;
+
     return SteamCard(
       borderColor: connected ? kGreenDim : kBorder,
       padding: const EdgeInsets.all(16),
@@ -205,14 +255,13 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
         children: [
           Row(
             children: [
-              // Big status indicator
               Container(
                 width: 14,
                 height: 14,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: connected ? kGreenOn : kParchDim,
-                  boxShadow: connected
+                  color: isiOS ? kBrass : (connected ? kGreenOn : kParchDim),
+                  boxShadow: (!isiOS && connected)
                       ? [BoxShadow(color: kGreenOn.withOpacity(0.6), blurRadius: 10)]
                       : null,
                 ),
@@ -223,9 +272,9 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
                 children: [
                   const SteamLabel('Local VPN'),
                   Text(
-                    connected ? 'CONNECTED' : 'DISCONNECTED',
+                    isiOS ? 'USE WIREGUARD APP' : (connected ? 'CONNECTED' : 'DISCONNECTED'),
                     style: TextStyle(
-                      color: connected ? kGreenOn : kParchDim,
+                      color: isiOS ? kBrassLight : (connected ? kGreenOn : kParchDim),
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                       letterSpacing: 1,
@@ -234,7 +283,14 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
                 ],
               ),
               const Spacer(),
-              if (_toggling)
+              if (isiOS)
+                SteamButton(
+                  label: 'Show QR',
+                  icon: Icons.qr_code,
+                  small: true,
+                  onPressed: () => _showQr(context),
+                )
+              else if (_toggling)
                 const GearSpinner(size: 28)
               else
                 SteamButton(
@@ -245,7 +301,7 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
                 ),
             ],
           ),
-          if (_message != null) ...[
+          if (!isiOS && _message != null) ...[
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.all(8),
