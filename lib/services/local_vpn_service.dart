@@ -17,8 +17,6 @@ PersistentKeepalive = 25
 
 const kDefaultTunnelName = 'Michaels-PC';
 const _serverIp = '45.76.177.181';
-
-// WireGuard Windows app CLI path
 const _wgExe = r'C:\Program Files\WireGuard\wireguard.exe';
 
 class LocalVpnService {
@@ -61,7 +59,6 @@ class LocalVpnService {
   }
 
   Future<bool> isVpnConnected() async {
-    // Check the tunnel service status via sc.exe — works without admin, no $ issues
     final result = await Process.run(
       'sc', ['query', 'WireGuardTunnel\$$_tunnelName'],
       runInShell: false,
@@ -71,44 +68,44 @@ class LocalVpnService {
 
   Future<String> connect() async {
     if (!File(_wgExe).existsSync()) {
-      return 'WireGuard not found at $_wgExe\nInstall WireGuard for Windows from wireguard.com';
+      return 'WireGuard not found at $_wgExe\nInstall WireGuard from wireguard.com first.';
     }
 
-    // Write config to a known temp path (name = tunnel name, required by wireguard.exe)
+    // Silently stop + remove any existing tunnel via sc.exe (avoids WireGuard help dialog)
+    if (await isVpnConnected()) {
+      await Process.run('sc', ['stop', 'WireGuardTunnel\$$_tunnelName']);
+      await Future.delayed(const Duration(milliseconds: 800));
+      await Process.run('sc', ['delete', 'WireGuardTunnel\$$_tunnelName']);
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+
     final confPath = '${Directory.systemTemp.path}\\$_tunnelName.conf';
     await File(confPath).writeAsString(_wgConfig);
 
-    // wireguard.exe /installtunnel requires admin — elevate via UAC
-    return _runElevated('"$_wgExe" /installtunnelservice "$confPath"', 'Connect');
+    final result = await Process.run(_wgExe, ['/installtunnelservice', confPath]);
+
+    if (result.exitCode == 0) {
+      for (var i = 0; i < 6; i++) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (await isVpnConnected()) return 'Connected';
+      }
+      return 'Tunnel installed — waiting for connection...';
+    }
+
+    final err = result.stderr.toString().trim();
+    return 'Connect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
   }
 
   Future<String> disconnect() async {
     if (!File(_wgExe).existsSync()) {
       return 'WireGuard not found at $_wgExe';
     }
-    return _runElevated('"$_wgExe" /uninstalltunnelservice "$_tunnelName"', 'Disconnect');
-  }
 
-  Future<String> _runElevated(String command, String label) async {
-    try {
-      // Write to a .bat to avoid quoting nightmares
-      final batPath = '${Directory.systemTemp.path}\\wg_cmd.bat';
-      await File(batPath).writeAsString('@echo off\n$command\n');
+    final result = await Process.run(_wgExe, ['/uninstalltunnelservice', _tunnelName]);
 
-      final result = await Process.run(
-        'powershell',
-        ['-NoProfile', '-Command',
-         'Start-Process cmd -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList \'/c,"$batPath"\''],
-        runInShell: false,
-      );
+    if (result.exitCode == 0) return 'Disconnected';
 
-      if (result.exitCode == 0) {
-        return '$label command sent (UAC prompt shown).';
-      }
-      final err = result.stderr.toString().trim();
-      return '$label failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
-    } catch (e) {
-      return '$label error: $e';
-    }
+    final err = result.stderr.toString().trim();
+    return 'Disconnect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
   }
 }
