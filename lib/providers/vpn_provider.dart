@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:wireguard_flutter/wireguard_flutter.dart';
 import '../models/peer_info.dart';
 import '../models/server_status.dart';
 import '../services/ssh_service.dart';
@@ -18,9 +20,10 @@ class VpnProvider extends ChangeNotifier {
   bool _initialized = false;
   Timer? _autoRefresh;
   Timer? _pingTimer;
+  StreamSubscription<VpnStage>? _stageSubscription;
 
   int? _pingMs;
-  bool _vpnConnected = false;
+  VpnStage _vpnStage = VpnStage.disconnected;
   bool _pingInProgress = false;
 
   ServerStatus? get status => _status;
@@ -29,29 +32,45 @@ class VpnProvider extends ChangeNotifier {
   String? get error => _error;
   bool get isConnected => ssh.isConnected;
   int? get pingMs => _pingMs;
-  bool get vpnConnected => _vpnConnected;
+  VpnStage get vpnStage => _vpnStage;
+  bool get vpnConnected => _vpnStage == VpnStage.connected;
 
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
     await ssh.loadConfig();
     await localVpn.loadConfig();
+
+    if (Platform.isIOS || Platform.isMacOS) {
+      await localVpn.initialize();
+      _stageSubscription = localVpn.stageStream.listen((stage) {
+        _vpnStage = stage;
+        notifyListeners();
+      });
+    }
+
     await refresh();
-    await _updateLocalState();
+
+    if (!Platform.isIOS && !Platform.isMacOS) {
+      await _updateLocalStateWindows();
+      _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) => _doPing());
+    }
+
     _autoRefresh = Timer.periodic(const Duration(seconds: 30), (_) => refresh());
-    _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) => _doPing());
   }
 
   @override
   void dispose() {
+    _stageSubscription?.cancel();
     _autoRefresh?.cancel();
     _pingTimer?.cancel();
     ssh.disconnect();
     super.dispose();
   }
 
-  Future<void> _updateLocalState() async {
-    _vpnConnected = await localVpn.isVpnConnected();
+  Future<void> _updateLocalStateWindows() async {
+    final connected = await localVpn.isVpnConnected();
+    _vpnStage = connected ? VpnStage.connected : VpnStage.disconnected;
     notifyListeners();
   }
 
@@ -70,7 +89,6 @@ class VpnProvider extends ChangeNotifier {
     _loading = true;
     _error = null;
     notifyListeners();
-
     try {
       _status = await vpn.getStatus();
       if (_status!.isReachable) {
@@ -84,15 +102,18 @@ class VpnProvider extends ChangeNotifier {
       notifyListeners();
     }
     _doPing();
-    _updateLocalState();
+    if (!Platform.isIOS && !Platform.isMacOS) _updateLocalStateWindows();
   }
 
   Future<String> toggleVpn() async {
-    final result = _vpnConnected
+    final result = vpnConnected
         ? await localVpn.disconnect()
         : await localVpn.connect();
-    await Future.delayed(const Duration(seconds: 2));
-    await _updateLocalState();
+    // iOS/macOS stage updates come via stream; Windows needs a manual check
+    if (!Platform.isIOS && !Platform.isMacOS) {
+      await Future.delayed(const Duration(seconds: 2));
+      await _updateLocalStateWindows();
+    }
     return result;
   }
 

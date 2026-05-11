@@ -1,7 +1,6 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:qr_flutter/qr_flutter.dart';
+import 'package:wireguard_flutter/wireguard_flutter.dart';
 import '../providers/vpn_provider.dart';
 import '../theme/colors.dart';
 import '../widgets/steam_card.dart';
@@ -190,62 +189,56 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
   Future<void> _toggle() async {
     setState(() { _toggling = true; _message = null; });
     final result = await widget.prov.toggleVpn();
-    setState(() { _toggling = false; _message = result; });
+    if (mounted) setState(() { _toggling = false; _message = result; });
     Future.delayed(const Duration(seconds: 4), () {
       if (mounted) setState(() => _message = null);
     });
   }
 
-  void _showQr(BuildContext context) {
-    final config = widget.prov.localVpn.wgConfig;
-    showDialog(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: kBgDark,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(4),
-          side: const BorderSide(color: kBrass),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const SteamLabel('Scan with WireGuard App'),
-              const SizedBox(height: 16),
-              Container(
-                color: Colors.white,
-                padding: const EdgeInsets.all(12),
-                child: QrImageView(
-                  data: config,
-                  version: QrVersions.auto,
-                  size: 240,
-                  backgroundColor: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Open WireGuard → + → Create from QR code',
-                style: TextStyle(color: kParchDim, fontSize: 11),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 16),
-              SteamButton(
-                label: 'Close',
-                small: true,
-                onPressed: () => Navigator.pop(context),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+  String _stageLabel(VpnStage stage) {
+    switch (stage) {
+      case VpnStage.connected:       return 'CONNECTED';
+      case VpnStage.connecting:      return 'CONNECTING...';
+      case VpnStage.disconnecting:   return 'DISCONNECTING...';
+      case VpnStage.authenticating:  return 'AUTHENTICATING...';
+      case VpnStage.reconnect:       return 'RECONNECTING...';
+      case VpnStage.waitingConnection: return 'WAITING...';
+      case VpnStage.preparing:       return 'PREPARING...';
+      case VpnStage.denied:          return 'PERMISSION DENIED';
+      case VpnStage.noConnection:    return 'NO CONNECTION';
+      default:                       return 'DISCONNECTED';
+    }
+  }
+
+  Color _stageColor(VpnStage stage) {
+    switch (stage) {
+      case VpnStage.connected:  return kGreenOn;
+      case VpnStage.denied:
+      case VpnStage.noConnection: return kRedOn;
+      case VpnStage.connecting:
+      case VpnStage.authenticating:
+      case VpnStage.preparing:
+      case VpnStage.reconnect:
+      case VpnStage.waitingConnection: return kBrassLight;
+      default: return kParchDim;
+    }
+  }
+
+  bool _isBusy(VpnStage stage) {
+    return stage == VpnStage.connecting ||
+        stage == VpnStage.disconnecting ||
+        stage == VpnStage.authenticating ||
+        stage == VpnStage.preparing ||
+        stage == VpnStage.waitingConnection ||
+        stage == VpnStage.reconnect;
   }
 
   @override
   Widget build(BuildContext context) {
+    final stage = widget.prov.vpnStage;
     final connected = widget.prov.vpnConnected;
-    final isiOS = Platform.isIOS;
+    final busy = _toggling || _isBusy(stage);
+    final color = _stageColor(stage);
 
     return SteamCard(
       borderColor: connected ? kGreenDim : kBorder,
@@ -260,8 +253,8 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
                 height: 14,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: isiOS ? kBrass : (connected ? kGreenOn : kParchDim),
-                  boxShadow: (!isiOS && connected)
+                  color: color,
+                  boxShadow: connected
                       ? [BoxShadow(color: kGreenOn.withOpacity(0.6), blurRadius: 10)]
                       : null,
                 ),
@@ -272,9 +265,9 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
                 children: [
                   const SteamLabel('Local VPN'),
                   Text(
-                    isiOS ? 'USE WIREGUARD APP' : (connected ? 'CONNECTED' : 'DISCONNECTED'),
+                    _stageLabel(stage),
                     style: TextStyle(
-                      color: isiOS ? kBrassLight : (connected ? kGreenOn : kParchDim),
+                      color: color,
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                       letterSpacing: 1,
@@ -283,14 +276,7 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
                 ],
               ),
               const Spacer(),
-              if (isiOS)
-                SteamButton(
-                  label: 'Show QR',
-                  icon: Icons.qr_code,
-                  small: true,
-                  onPressed: () => _showQr(context),
-                )
-              else if (_toggling)
+              if (busy)
                 const GearSpinner(size: 28)
               else
                 SteamButton(
@@ -301,7 +287,7 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
                 ),
             ],
           ),
-          if (!isiOS && _message != null) ...[
+          if (_message != null) ...[
             const SizedBox(height: 10),
             Container(
               padding: const EdgeInsets.all(8),
