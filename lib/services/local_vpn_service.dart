@@ -147,66 +147,54 @@ class LocalVpnService {
     return m?.group(1)?.trim() ?? '45.76.177.181:51820';
   }
 
-  // ── macOS: wg-quick via osascript (prompts admin password) ────────────────
+  // ── macOS: scutil --nc controls the WireGuard App tunnel ─────────────────
 
-  String get _macOsConfPath => '/tmp/$_tunnelName.conf';
-
-  static const _wgQuickPaths = [
-    '/usr/local/bin/wg-quick',
-    '/opt/homebrew/bin/wg-quick',
-  ];
-  static const _wgPaths = [
-    '/usr/local/bin/wg',
-    '/opt/homebrew/bin/wg',
-  ];
-
-  String? _findBinary(List<String> paths) {
-    for (final p in paths) {
-      if (File(p).existsSync()) return p;
+  // Discovers the first WireGuard tunnel name registered in system VPN prefs.
+  Future<String?> _macOsWgTunnelName() async {
+    try {
+      final r = await Process.run('scutil', ['--nc', 'list']);
+      final out = r.stdout.toString();
+      final match = RegExp(r'"([^"]+)"\s*\[VPN:com\.wireguard').firstMatch(out);
+      return match?.group(1);
+    } catch (_) {
+      return null;
     }
-    return null;
   }
 
   Future<bool> _isVpnConnectedMacOS() async {
-    final wg = _findBinary(_wgPaths);
-    if (wg == null) return false;
     try {
-      final r = await Process.run(wg, ['show', _tunnelName]);
-      return r.exitCode == 0;
+      final name = await _macOsWgTunnelName();
+      if (name == null) return false;
+      final r = await Process.run('scutil', ['--nc', 'status', name]);
+      return r.stdout.toString().trim().startsWith('Connected');
     } catch (_) {
       return false;
     }
   }
 
   Future<String> _connectMacOS() async {
-    final wgQuick = _findBinary(_wgQuickPaths);
-    if (wgQuick == null) {
-      return 'wg-quick not found.\n\nInstall via Terminal:\n  brew install wireguard-tools\n\nThen tap Connect again.';
-    }
     try {
-      await File(_macOsConfPath).writeAsString(_wgConfig);
-      final script =
-          'do shell script "$wgQuick up $_macOsConfPath" with administrator privileges';
-      final result = await Process.run('osascript', ['-e', script]);
-      if (result.exitCode == 0) return 'Connected';
-      final err = (result.stderr.toString() + result.stdout.toString()).trim();
-      return 'Connect failed:\n${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
+      final name = await _macOsWgTunnelName();
+      if (name == null) {
+        return 'No WireGuard tunnel found.\nOpen the WireGuard app and add your tunnel first.';
+      }
+      final r = await Process.run('scutil', ['--nc', 'start', name]);
+      if (r.exitCode == 0) return 'Connecting "$name"...';
+      final err = (r.stderr.toString() + r.stdout.toString()).trim();
+      return 'Connect failed:\n${err.isNotEmpty ? err : "exit ${r.exitCode}"}';
     } catch (e) {
       return 'Error: $e';
     }
   }
 
   Future<String> _disconnectMacOS() async {
-    final wgQuick = _findBinary(_wgQuickPaths);
-    if (wgQuick == null) return 'wg-quick not found — nothing to disconnect.';
     try {
-      for (final target in [_macOsConfPath, _tunnelName]) {
-        final script =
-            'do shell script "$wgQuick down $target" with administrator privileges';
-        final result = await Process.run('osascript', ['-e', script]);
-        if (result.exitCode == 0) return 'Disconnected';
-      }
-      return 'Disconnect failed — tunnel may already be down';
+      final name = await _macOsWgTunnelName();
+      if (name == null) return 'No WireGuard tunnel found.';
+      final r = await Process.run('scutil', ['--nc', 'stop', name]);
+      if (r.exitCode == 0) return 'Disconnected "$name"';
+      final err = (r.stderr.toString() + r.stdout.toString()).trim();
+      return 'Disconnect failed:\n${err.isNotEmpty ? err : "exit ${r.exitCode}"}';
     } catch (e) {
       return 'Error: $e';
     }
