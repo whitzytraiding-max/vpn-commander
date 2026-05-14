@@ -1,36 +1,64 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2018-2023 WireGuard LLC. All Rights Reserved.
+
+import Foundation
 import NetworkExtension
 import WireGuardKit
+
+enum PacketTunnelProviderError: String, Error {
+    case invalidProtocolConfiguration
+    case cantParseWgQuickConfig
+}
 
 class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private lazy var adapter: WireGuardAdapter = {
-        WireGuardAdapter(with: self) { _, message in
-            NSLog("WireGuard: \(message)")
+        return WireGuardAdapter(with: self) { [weak self] _, message in
+            self?.log(message)
         }
     }()
 
+    func log(_ message: String) {
+        NSLog("WireGuardTunnel: %@\n", message)
+    }
+
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-        guard
-            let proto = protocolConfiguration as? NETunnelProviderProtocol,
-            let config = proto.providerConfiguration,
-            let wgQuickConfig = config["wgQuickConfig"] as? String
-        else {
-            completionHandler(WGError.badConfig)
+        log("Starting tunnel")
+        guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
+              let providerConfiguration = protocolConfiguration.providerConfiguration,
+              let wgQuickConfig = providerConfiguration["wgQuickConfig"] as? String else {
+            log("Invalid provider configuration")
+            completionHandler(PacketTunnelProviderError.invalidProtocolConfiguration)
             return
         }
 
-        do {
-            let tunnelConfig = try TunnelConfiguration(fromWgQuickConfig: wgQuickConfig, called: "wg0")
-            adapter.start(tunnelConfiguration: tunnelConfig) { error in
-                completionHandler(error)
+        log("Parsing wg-quick config")
+        guard let tunnelConfiguration = try? TunnelConfiguration(fromWgQuickConfig: wgQuickConfig) else {
+            log("Failed to parse wg-quick config")
+            completionHandler(PacketTunnelProviderError.cantParseWgQuickConfig)
+            return
+        }
+
+        log("Starting WireGuard adapter")
+        adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] adapterError in
+            guard let self = self else { return }
+            if let adapterError = adapterError {
+                self.log("Adapter error: \(adapterError.localizedDescription)")
+            } else {
+                self.log("Tunnel interface: \(self.adapter.interfaceName ?? "unknown")")
             }
-        } catch {
-            completionHandler(WGError.parseError)
+            completionHandler(adapterError)
         }
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-        adapter.stop { _ in completionHandler() }
+        log("Stopping tunnel (reason: \(reason.rawValue))")
+        adapter.stop { [weak self] error in
+            if let error = error {
+                self?.log("Stop error: \(error.localizedDescription)")
+            }
+            completionHandler()
+        }
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
@@ -43,9 +71,4 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             handler(nil)
         }
     }
-}
-
-enum WGError: Error {
-    case badConfig
-    case parseError
 }

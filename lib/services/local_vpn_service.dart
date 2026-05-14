@@ -38,15 +38,17 @@ const _providerBundleId = 'com.michaelcarrihill.vpnCommander.WGExtension';
 
 class LocalVpnService {
   String _tunnelName = 'wg0';
-  String _wgConfig = kDefaultWgConfig;
+  late String _wgConfig = Platform.isIOS ? kIPhoneWgConfig : kDefaultWgConfig;
 
   String get tunnelName => _tunnelName;
   String get wgConfig => _wgConfig;
 
+  String get _platformDefault => Platform.isIOS ? kIPhoneWgConfig : kDefaultWgConfig;
+
   Future<void> loadConfig() async {
     final prefs = await SharedPreferences.getInstance();
     _tunnelName = prefs.getString('wg_tunnel_name') ?? 'wg0';
-    _wgConfig = prefs.getString('wg_config') ?? kDefaultWgConfig;
+    _wgConfig = prefs.getString('wg_config') ?? _platformDefault;
   }
 
   Future<void> saveConfig({required String tunnelName, required String config}) async {
