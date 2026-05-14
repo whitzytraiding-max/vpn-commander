@@ -1,5 +1,5 @@
 # Uncomment this line to define a global platform for your project
-# platform :ios, '13.0'
+platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -36,8 +36,21 @@ target 'Runner' do
   end
 end
 
+target 'WGExtension' do
+  use_frameworks!
+  pod 'WireGuardKit'
+end
+
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+  end
+  # Fix WireGuardKitC sys/types compatibility with newer Xcode SDKs
+  header = 'Pods/WireGuardKit/Sources/WireGuardKitC/WireGuardKitC.h'
+  if File.exist?(header)
+    content = File.read(header)
+    unless content.include?('#include <sys/types.h>')
+      File.write(header, content.sub("// SPDX-License-Identifier: MIT\n// Copyright", "// SPDX-License-Identifier: MIT\n// Copyright").sub("#include \"key.h\"", "#include <sys/types.h>\n#include \"key.h\""))
+    end
   end
 end

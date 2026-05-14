@@ -41,7 +41,7 @@ class VpnProvider extends ChangeNotifier {
     await ssh.loadConfig();
     await localVpn.loadConfig();
 
-    if (Platform.isIOS || Platform.isMacOS) {
+    if (Platform.isIOS) {
       await localVpn.initialize();
       _stageSubscription = localVpn.stageStream.listen((stage) {
         _vpnStage = stage;
@@ -51,8 +51,8 @@ class VpnProvider extends ChangeNotifier {
 
     await refresh();
 
-    if (!Platform.isIOS && !Platform.isMacOS) {
-      await _updateLocalStateWindows();
+    if (!Platform.isIOS) {
+      await _updateLocalVpnState();
       _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) => _doPing());
     }
 
@@ -68,7 +68,7 @@ class VpnProvider extends ChangeNotifier {
     super.dispose();
   }
 
-  Future<void> _updateLocalStateWindows() async {
+  Future<void> _updateLocalVpnState() async {
     final connected = await localVpn.isVpnConnected();
     _vpnStage = connected ? VpnStage.connected : VpnStage.disconnected;
     notifyListeners();
@@ -102,17 +102,17 @@ class VpnProvider extends ChangeNotifier {
       notifyListeners();
     }
     _doPing();
-    if (!Platform.isIOS && !Platform.isMacOS) _updateLocalStateWindows();
+    if (!Platform.isIOS) _updateLocalVpnState();
   }
 
   Future<String> toggleVpn() async {
     final result = vpnConnected
         ? await localVpn.disconnect()
         : await localVpn.connect();
-    // iOS/macOS stage updates come via stream; Windows needs a manual check
-    if (!Platform.isIOS && !Platform.isMacOS) {
+    // iOS stage updates come via stream; macOS and Windows need a manual check
+    if (!Platform.isIOS) {
       await Future.delayed(const Duration(seconds: 2));
-      await _updateLocalStateWindows();
+      await _updateLocalVpnState();
     }
     return result;
   }

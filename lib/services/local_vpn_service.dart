@@ -57,13 +57,13 @@ class LocalVpnService {
     _wgConfig = config;
   }
 
-  // Called once at startup on iOS/macOS
+  // iOS only — macOS uses osascript, Windows uses wg.exe
   Future<void> initialize() async {
-    if (!Platform.isIOS && !Platform.isMacOS) return;
+    if (!Platform.isIOS) return;
     await WireGuardFlutter.instance.initialize(interfaceName: _tunnelName);
   }
 
-  // Live stage stream for iOS/macOS
+  // iOS only — macOS and Windows are polled
   Stream<VpnStage> get stageStream => WireGuardFlutter.instance.vpnStageSnapshot;
 
   Future<int?> pingServer() async {
@@ -85,10 +85,11 @@ class LocalVpnService {
   }
 
   Future<bool> isVpnConnected() async {
-    if (Platform.isIOS || Platform.isMacOS) {
+    if (Platform.isIOS) {
       final stage = await WireGuardFlutter.instance.stage();
       return stage == VpnStage.connected;
     }
+    if (Platform.isMacOS) return _isVpnConnectedMacOS();
     if (Platform.isWindows) {
       try {
         final r = await Process.run('sc', ['query', 'WireGuardTunnel\$$_tunnelName']);
@@ -101,20 +102,22 @@ class LocalVpnService {
   }
 
   Future<String> connect() async {
-    if (Platform.isIOS || Platform.isMacOS) return _connectNative();
+    if (Platform.isIOS) return _connectIOS();
+    if (Platform.isMacOS) return _connectMacOS();
     if (Platform.isWindows) return _connectWindows();
     return 'Platform not supported.';
   }
 
   Future<String> disconnect() async {
-    if (Platform.isIOS || Platform.isMacOS) return _disconnectNative();
+    if (Platform.isIOS) return _disconnectIOS();
+    if (Platform.isMacOS) return _disconnectMacOS();
     if (Platform.isWindows) return _disconnectWindows();
     return 'Platform not supported.';
   }
 
-  // ── iOS / macOS: WireGuard via Network Extension ──────────────────────────
+  // ── iOS: WireGuard via Network Extension (wireguard_flutter) ──────────────
 
-  Future<String> _connectNative() async {
+  Future<String> _connectIOS() async {
     try {
       final endpoint = _extractEndpoint();
       await WireGuardFlutter.instance.startVpn(
@@ -128,7 +131,7 @@ class LocalVpnService {
     }
   }
 
-  Future<String> _disconnectNative() async {
+  Future<String> _disconnectIOS() async {
     try {
       await WireGuardFlutter.instance.stopVpn();
       return 'Disconnected';
@@ -140,6 +143,49 @@ class LocalVpnService {
   String _extractEndpoint() {
     final m = RegExp(r'Endpoint\s*=\s*([^\n]+)').firstMatch(_wgConfig);
     return m?.group(1)?.trim() ?? '45.76.177.181:51820';
+  }
+
+  // ── macOS: wg-quick via osascript (prompts admin password) ────────────────
+
+  String get _macOsConfPath => '/tmp/$_tunnelName.conf';
+
+  Future<bool> _isVpnConnectedMacOS() async {
+    for (final wg in ['/usr/local/bin/wg', '/opt/homebrew/bin/wg', 'wg']) {
+      try {
+        final r = await Process.run(wg, ['show', _tunnelName]);
+        if (r.exitCode == 0) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  Future<String> _connectMacOS() async {
+    try {
+      await File(_macOsConfPath).writeAsString(_wgConfig);
+      final script =
+          'do shell script "wg-quick up $_macOsConfPath" with administrator privileges';
+      final result = await Process.run('osascript', ['-e', script]);
+      if (result.exitCode == 0) return 'Connected';
+      final err = result.stderr.toString().trim();
+      return 'Connect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
+    } catch (e) {
+      return 'Error: $e';
+    }
+  }
+
+  Future<String> _disconnectMacOS() async {
+    try {
+      // Try by conf file first, then by interface name
+      for (final target in [_macOsConfPath, _tunnelName]) {
+        final script =
+            'do shell script "wg-quick down $target" with administrator privileges';
+        final result = await Process.run('osascript', ['-e', script]);
+        if (result.exitCode == 0) return 'Disconnected';
+      }
+      return 'Disconnect failed — tunnel may already be down';
+    } catch (e) {
+      return 'Error: $e';
+    }
   }
 
   // ── Windows: WireGuard service via wireguard.exe ───────────────────────────
