@@ -189,10 +189,17 @@ class _VpnToggleCardState extends State<_VpnToggleCard> {
   Future<void> _toggle() async {
     setState(() { _toggling = true; _message = null; });
     final result = await widget.prov.toggleVpn();
-    if (mounted) setState(() { _toggling = false; _message = result; });
-    Future.delayed(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _message = null);
-    });
+    if (!mounted) return;
+    setState(() { _toggling = false; _message = result; });
+    // Only auto-clear success messages; errors stay until next tap
+    final isError = result.toLowerCase().contains('failed') ||
+        result.toLowerCase().contains('error') ||
+        result.toLowerCase().contains('not found');
+    if (!isError) {
+      Future.delayed(const Duration(seconds: 6), () {
+        if (mounted) setState(() => _message = null);
+      });
+    }
   }
 
   String _stageLabel(VpnStage stage) {

@@ -151,36 +151,58 @@ class LocalVpnService {
 
   String get _macOsConfPath => '/tmp/$_tunnelName.conf';
 
-  Future<bool> _isVpnConnectedMacOS() async {
-    for (final wg in ['/usr/local/bin/wg', '/opt/homebrew/bin/wg', 'wg']) {
-      try {
-        final r = await Process.run(wg, ['show', _tunnelName]);
-        if (r.exitCode == 0) return true;
-      } catch (_) {}
+  static const _wgQuickPaths = [
+    '/usr/local/bin/wg-quick',
+    '/opt/homebrew/bin/wg-quick',
+  ];
+  static const _wgPaths = [
+    '/usr/local/bin/wg',
+    '/opt/homebrew/bin/wg',
+  ];
+
+  String? _findBinary(List<String> paths) {
+    for (final p in paths) {
+      if (File(p).existsSync()) return p;
     }
-    return false;
+    return null;
+  }
+
+  Future<bool> _isVpnConnectedMacOS() async {
+    final wg = _findBinary(_wgPaths);
+    if (wg == null) return false;
+    try {
+      final r = await Process.run(wg, ['show', _tunnelName]);
+      return r.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<String> _connectMacOS() async {
+    final wgQuick = _findBinary(_wgQuickPaths);
+    if (wgQuick == null) {
+      return 'wg-quick not found.\n\nInstall via Terminal:\n  brew install wireguard-tools\n\nThen tap Connect again.';
+    }
     try {
       await File(_macOsConfPath).writeAsString(_wgConfig);
       final script =
-          'do shell script "wg-quick up $_macOsConfPath" with administrator privileges';
+          'do shell script "$wgQuick up $_macOsConfPath" with administrator privileges';
       final result = await Process.run('osascript', ['-e', script]);
       if (result.exitCode == 0) return 'Connected';
-      final err = result.stderr.toString().trim();
-      return 'Connect failed: ${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
+      final err = (result.stderr.toString() + result.stdout.toString()).trim();
+      return 'Connect failed:\n${err.isNotEmpty ? err : "exit ${result.exitCode}"}';
     } catch (e) {
       return 'Error: $e';
     }
   }
 
   Future<String> _disconnectMacOS() async {
+    final wgQuick = _findBinary(_wgQuickPaths);
+    if (wgQuick == null) return 'wg-quick not found — nothing to disconnect.';
     try {
-      // Try by conf file first, then by interface name
       for (final target in [_macOsConfPath, _tunnelName]) {
         final script =
-            'do shell script "wg-quick down $target" with administrator privileges';
+            'do shell script "$wgQuick down $target" with administrator privileges';
         final result = await Process.run('osascript', ['-e', script]);
         if (result.exitCode == 0) return 'Disconnected';
       }
