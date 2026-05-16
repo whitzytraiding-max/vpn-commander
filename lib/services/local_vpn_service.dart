@@ -3,6 +3,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wireguard_flutter/wireguard_flutter.dart';
 
 // Default config is Michael's Mac — edit via Settings on each device
+// WebSocket bridge URL — server converts WS frames → UDP to WireGuard.
+const _kWsBridgeUrl = 'ws://45.76.177.181:8080';
+
 const kDefaultWgConfig = '''[Interface]
 PrivateKey = qE2o2IB5CwUEkQ1hdAbyzNtTPwR0/jifOatUoGzbKHM=
 Address = 10.8.0.5/24
@@ -12,7 +15,7 @@ MTU = 1280
 [Peer]
 PublicKey = krNb0RvwqhStEwIZ4DxPRWB8S6hM42L2EP6zHf36nz8=
 PresharedKey = TLy+agZsDnbe2yKR3WaNpUQl+WGnODrVw+pYwWktKoU=
-Endpoint = 45.76.177.181:51820
+Endpoint = 45.76.177.181:443
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ''';
@@ -27,7 +30,7 @@ MTU = 1280
 [Peer]
 PublicKey = krNb0RvwqhStEwIZ4DxPRWB8S6hM42L2EP6zHf36nz8=
 PresharedKey = Ut25N3ZOoJF27PJNLvuYUDbmGt48auyvbl98ogpIqRI=
-Endpoint = 45.76.177.181:51820
+Endpoint = 45.76.177.181:443
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 ''';
@@ -49,6 +52,7 @@ class LocalVpnService {
     final prefs = await SharedPreferences.getInstance();
     _tunnelName = prefs.getString('wg_tunnel_name') ?? 'wg0';
     _wgConfig = prefs.getString('wg_config') ?? _platformDefault;
+    await _loadTunnelPref();
   }
 
   Future<void> saveConfig({required String tunnelName, required String config}) async {
@@ -71,16 +75,14 @@ class LocalVpnService {
   Future<int?> pingServer() async {
     if (Platform.isIOS) return null;
     try {
-      final args = Platform.isWindows
-          ? ['-n', '1', '-w', '2000', _serverIp]
-          : ['-c', '1', '-t', '3', _serverIp];
-      final result = await Process.run('ping', args, runInShell: Platform.isWindows);
-      final output = result.stdout.toString();
-      final match = Platform.isWindows
-          ? RegExp(r'Average\s*=\s*(\d+)ms', caseSensitive: false).firstMatch(output)
-          : RegExp(r'round-trip[^=]+=\s*[\d.]+/([\d.]+)', caseSensitive: false).firstMatch(output);
-      if (match != null) return double.tryParse(match.group(1) ?? '')?.round();
-      return null;
+      final sw = Stopwatch()..start();
+      final socket = await Socket.connect(
+        _serverIp, 22,
+        timeout: const Duration(seconds: 3),
+      );
+      final ms = sw.elapsedMilliseconds;
+      socket.destroy();
+      return ms;
     } catch (_) {
       return null;
     }
@@ -117,21 +119,41 @@ class LocalVpnService {
     return 'Platform not supported.';
   }
 
+  // Whether to route WireGuard traffic over the WebSocket TCP bridge.
+  // Defaults ON for iOS because Myanmar ISP DPI blocks WireGuard UDP.
+  bool _wsTunnelEnabled = Platform.isIOS;
+  bool get wsTunnelEnabled => _wsTunnelEnabled;
+
+  Future<void> setWsTunnel(bool enabled) async {
+    _wsTunnelEnabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('ws_tunnel_enabled', enabled);
+  }
+
+  Future<void> _loadTunnelPref() async {
+    final prefs = await SharedPreferences.getInstance();
+    _wsTunnelEnabled = prefs.getBool('ws_tunnel_enabled') ?? Platform.isIOS;
+  }
+
   // ── iOS: WireGuard via Network Extension (wireguard_flutter) ──────────────
 
   Future<String> _connectIOS() async {
     try {
       final endpoint = _extractEndpoint();
+      final config = _wsTunnelEnabled ? _injectWsTunnel(_wgConfig) : _wgConfig;
       await WireGuardFlutter.instance.startVpn(
         serverAddress: endpoint,
-        wgQuickConfig: _wgConfig,
+        wgQuickConfig: config,
         providerBundleIdentifier: _providerBundleId,
       );
-      return 'Connecting...';
+      return _wsTunnelEnabled ? 'Connecting via WebSocket tunnel...' : 'Connecting...';
     } catch (e) {
       return 'Error: $e';
     }
   }
+
+  String _injectWsTunnel(String config) =>
+      '#WS_TUNNEL = $_kWsBridgeUrl\n$config';
 
   Future<String> _disconnectIOS() async {
     try {

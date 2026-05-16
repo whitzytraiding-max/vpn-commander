@@ -9,7 +9,7 @@ class VpnService {
 
   Future<String> getUptime() => ssh.run('uptime -p');
 
-  Future<String> getWgStatus() => ssh.run('wg show');
+  Future<String> getWgStatus() => ssh.run('docker exec wg-easy wg show');
 
   Future<String> getDiskUsage() => ssh.run('df -h / | tail -1');
 
@@ -50,34 +50,30 @@ class VpnService {
       ssh.runStream('docker logs --tail $tail -f wg-easy 2>&1');
 
   Future<ServerStatus> getStatus() async {
-    try {
-      final results = await Future.wait([
-        getUptime(),
-        getDockerStatus(),
-        getWgStatus(),
-        getPeers(),
-      ]);
+    final results = await Future.wait([
+      getUptime(),
+      getDockerStatus(),
+      getWgStatus(),
+      getPeers(),
+    ]);
 
-      final uptime = results[0] as String;
-      final dockerStatus = results[1] as String;
-      final wgStatus = results[2] as String;
-      final peers = results[3] as List<PeerInfo>;
+    final uptime = results[0] as String;
+    final dockerStatus = results[1] as String;
+    final wgStatus = results[2] as String;
+    final peers = results[3] as List<PeerInfo>;
 
-      return ServerStatus(
-        isReachable: true,
-        dockerRunning: dockerStatus.toLowerCase().contains('up'),
-        wireguardUp: wgStatus.contains('interface:'),
-        activePeers: peers.where((p) => p.isConnected).length,
-        uptime: uptime,
-        checkedAt: DateTime.now(),
-      );
-    } catch (_) {
-      return ServerStatus.offline();
-    }
+    return ServerStatus(
+      isReachable: true,
+      dockerRunning: dockerStatus.toLowerCase().contains('up'),
+      wireguardUp: wgStatus.contains('interface:'),
+      activePeers: peers.where((p) => p.isConnected).length,
+      uptime: uptime,
+      checkedAt: DateTime.now(),
+    );
   }
 
   Future<List<PeerInfo>> getPeers() async {
-    final output = await ssh.run('wg show wg0 dump');
+    final output = await ssh.run('docker exec wg-easy wg show wg0 dump');
     return _parseWgDump(output);
   }
 

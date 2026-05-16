@@ -4,9 +4,20 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+// Bundled key — authorized on the VPN server for all devices.
+// Settings > Private Key Content overrides this if set.
+const _kBundledKey = '''-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACB63Eg0UaFelCjRVPWNZ1+r1D0ovO28rY8xVojwB/YS/wAAAJj+Lxeg/i8X
+oAAAAAtzc2gtZWQyNTUxOQAAACB63Eg0UaFelCjRVPWNZ1+r1D0ovO28rY8xVojwB/YS/w
+AAAEC5XY0AVr/gY4VuMPCB2U2B3OX5w3c2hzzeX3MAi6P/4nrcSDRRoV6UKNFU9Y1nX6vU
+PSi87bytjzFWiPAH9hL/AAAAE21pY2hhZWxzLW1hYy1jbGF1ZGUBAg==
+-----END OPENSSH PRIVATE KEY-----''';
+
 class SshService {
   SSHClient? _client;
-  bool _connecting = false;
+  // Single shared Future so concurrent connect() calls all await the same attempt
+  Future<void>? _connectFuture;
 
   String _host = '45.76.177.181';
   int _port = 22;
@@ -60,20 +71,27 @@ class SshService {
   }
 
   Future<void> connect() async {
-    if (_connecting || isConnected) return;
-    _connecting = true;
-    try {
-      await _doConnect();
-    } finally {
-      _connecting = false;
-    }
+    if (isConnected) return;
+    // All concurrent callers share the same future so none of them
+    // proceed to _execute() before the connection is ready.
+    _connectFuture ??= _doConnect().whenComplete(() => _connectFuture = null);
+    await _connectFuture!;
   }
 
   Future<void> _doConnect() async {
-    final socket = await SSHSocket.connect(
-      _host, _port,
-      timeout: const Duration(seconds: 10),
-    );
+    // Try configured port first, fall back to 8443 if blocked (e.g. work WiFi)
+    final fallbackPorts = [_port, if (_port != 8443) 8443];
+    SSHSocket? socket;
+    for (final p in fallbackPorts) {
+      try {
+        socket = await SSHSocket.connect(_host, p, timeout: const Duration(seconds: 10));
+        if (p != _port) _port = p; // remember the working port
+        break;
+      } catch (_) {
+        if (p == fallbackPorts.last) rethrow;
+      }
+    }
+    final socket0 = socket!;
 
     String? keyData = _keyContent;
 
@@ -86,8 +104,12 @@ class SshService {
       final candidates = <String>[
         if (Platform.isWindows)
           '${Platform.environment['USERPROFILE']}\\.ssh\\id_ed25519',
-        if (Platform.isMacOS || Platform.isLinux)
+        if (Platform.isMacOS || Platform.isLinux) ...[
+          // macOS sandbox sets HOME to the app container, not the real home dir
+          if (Platform.environment['USER'] != null)
+            '/Users/${Platform.environment['USER']}/.ssh/id_ed25519',
           '${Platform.environment['HOME']}/.ssh/id_ed25519',
+        ],
       ];
       for (final path in candidates) {
         final f = File(path);
@@ -98,21 +120,25 @@ class SshService {
       }
     }
 
+    keyData ??= _kBundledKey;
+
     _client = SSHClient(
-      socket,
+      socket0,
       username: _username,
-      identities: keyData != null ? SSHKeyPair.fromPem(keyData) : [],
+      identities: SSHKeyPair.fromPem(keyData),
     );
+
+    // Wait for authentication to complete before returning.
+    // Without this, callers would proceed to execute() before auth is done.
+    await _client!.authenticated;
   }
 
   Future<String> run(String command) async {
-    if (!isConnected) {
-      await connect();
-    }
+    if (!isConnected) await connect();
     try {
       return await _execute(command);
     } catch (e) {
-      // Connection dropped — reconnect once
+      // Connection dropped mid-session — reconnect once and retry
       _client = null;
       await connect();
       return await _execute(command);

@@ -127,9 +127,9 @@ class DashboardScreen extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: _ServiceBadge(
-                    label: 'SSH',
-                    active: prov.isConnected,
-                    icon: Icons.terminal,
+                    label: 'Server',
+                    active: status?.isReachable ?? false,
+                    icon: Icons.dns_outlined,
                   ),
                 ),
               ]),

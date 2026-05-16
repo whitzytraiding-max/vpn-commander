@@ -241,6 +241,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 16),
+          SteamCard(
+            child: Consumer<VpnProvider>(
+              builder: (context, prov, _) => Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: const [
+                        Text(
+                          'WebSocket Tunnel Mode',
+                          style: TextStyle(color: kParchment, fontSize: 13),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Tunnels over TCP — use on Myanmar networks or any ISP that blocks UDP.',
+                          style: TextStyle(color: kParchDim, fontSize: 10),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: prov.localVpn.wsTunnelEnabled,
+                    activeColor: kBrass,
+                    onChanged: (v) => prov.localVpn.setWsTunnel(v),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 12),
           SteamButton(
             label: _wgSaved ? 'Saved!' : 'Save Tunnel Config',
@@ -258,7 +288,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _InfoRow('Provider', 'Vultr · Singapore'),
                 _InfoRow('OS', 'Ubuntu 24.04 LTS'),
                 _InfoRow('Specs', '1 vCPU · 1GB RAM · 25GB SSD'),
-                _InfoRow('WireGuard Port', 'UDP 51820'),
+                _InfoRow('WireGuard Port', 'UDP 443'),
                 _InfoRow('Admin Panel', 'http://10.8.0.1:51821 (via VPN)'),
                 _InfoRow('WG Subnet', '10.8.0.0/24'),
               ],
