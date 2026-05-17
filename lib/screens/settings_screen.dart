@@ -26,6 +26,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _wgSaved = false;
   bool _testing = false;
   String? _testResult;
+  String? _repairResult;
 
   @override
   void initState() {
@@ -58,6 +59,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _tunnelName.dispose();
     _wgConfig.dispose();
     super.dispose();
+  }
+
+  Future<void> _repairMacTunnel() async {
+    final prov = context.read<VpnProvider>();
+    final msg = await prov.localVpn.repairMacTunnel();
+    setState(() => _repairResult = msg);
   }
 
   Future<void> _saveWgConfig() async {
@@ -272,11 +279,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          SteamButton(
-            label: _wgSaved ? 'Saved!' : 'Save Tunnel Config',
-            icon: _wgSaved ? Icons.check : Icons.save,
-            onPressed: _saveWgConfig,
+          Row(
+            children: [
+              SteamButton(
+                label: _wgSaved ? 'Saved!' : 'Save Tunnel Config',
+                icon: _wgSaved ? Icons.check : Icons.save,
+                onPressed: _saveWgConfig,
+              ),
+              if (Platform.isMacOS) ...[
+                const SizedBox(width: 12),
+                SteamButton(
+                  label: 'Repair Tunnel',
+                  icon: Icons.build,
+                  onPressed: _repairMacTunnel,
+                ),
+              ],
+            ],
           ),
+          if (_repairResult != null) ...[
+            const SizedBox(height: 12),
+            SteamCard(
+              child: Text(
+                _repairResult!,
+                style: const TextStyle(color: kParchment, fontSize: 12),
+              ),
+            ),
+          ],
 
           const SizedBox(height: 30),
           const SteamLabel('Server Info'),

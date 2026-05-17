@@ -6,6 +6,9 @@ import 'package:wireguard_flutter/wireguard_flutter.dart';
 // WebSocket bridge URL — server converts WS frames → UDP to WireGuard.
 const _kWsBridgeUrl = 'ws://45.76.177.181:8080';
 
+// AllowedIPs covers 0.0.0.0/0 minus 45.76.177.181/32 so the server itself
+// routes through the existing connection (e.g. ExpressVPN) rather than looping
+// back through WireGuard. All other traffic goes through the VPN server.
 const kDefaultWgConfig = '''[Interface]
 PrivateKey = qE2o2IB5CwUEkQ1hdAbyzNtTPwR0/jifOatUoGzbKHM=
 Address = 10.8.0.5/24
@@ -16,7 +19,7 @@ MTU = 1280
 PublicKey = krNb0RvwqhStEwIZ4DxPRWB8S6hM42L2EP6zHf36nz8=
 PresharedKey = TLy+agZsDnbe2yKR3WaNpUQl+WGnODrVw+pYwWktKoU=
 Endpoint = 45.76.177.181:443
-AllowedIPs = 0.0.0.0/0, ::/0
+AllowedIPs = 0.0.0.0/3, 32.0.0.0/5, 40.0.0.0/6, 44.0.0.0/8, 45.0.0.0/10, 45.64.0.0/13, 45.72.0.0/14, 45.76.0.0/17, 45.76.128.0/19, 45.76.160.0/20, 45.76.176.0/24, 45.76.177.0/25, 45.76.177.128/27, 45.76.177.160/28, 45.76.177.176/30, 45.76.177.180/32, 45.76.177.182/31, 45.76.177.184/29, 45.76.177.192/26, 45.76.178.0/23, 45.76.180.0/22, 45.76.184.0/21, 45.76.192.0/18, 45.77.0.0/16, 45.78.0.0/15, 45.80.0.0/12, 45.96.0.0/11, 45.128.0.0/9, 46.0.0.0/7, 48.0.0.0/4, 64.0.0.0/2, 128.0.0.0/1, ::/0
 PersistentKeepalive = 25
 ''';
 
@@ -51,7 +54,18 @@ class LocalVpnService {
   Future<void> loadConfig() async {
     final prefs = await SharedPreferences.getInstance();
     _tunnelName = prefs.getString('wg_tunnel_name') ?? 'wg0';
-    _wgConfig = prefs.getString('wg_config') ?? _platformDefault;
+    final stored = prefs.getString('wg_config');
+    // Migrate: old Mac config had AllowedIPs = 0.0.0.0/0 which conflicts with
+    // any upstream VPN (e.g. ExpressVPN) by routing the server IP through itself.
+    // Replace with the server-excluded AllowedIPs automatically.
+    if (stored != null &&
+        !Platform.isIOS &&
+        stored.contains('AllowedIPs = 0.0.0.0/0')) {
+      _wgConfig = kDefaultWgConfig;
+      await prefs.setString('wg_config', _wgConfig);
+    } else {
+      _wgConfig = stored ?? _platformDefault;
+    }
     await _loadTunnelPref();
   }
 
@@ -183,6 +197,40 @@ class LocalVpnService {
     }
   }
 
+  // Checks if the stored tunnel config is outdated.
+  // scutil --nc show exposes RemoteAddress but not the full wgQuickConfig, so
+  // we use the port as a proxy: old configs point to 51820, new ones use 443.
+  Future<bool> _macOsTunnelHasOldConfig(String name) async {
+    try {
+      final r = await Process.run('scutil', ['--nc', 'show', name]);
+      return r.stdout.toString().contains(':51820');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Writes the current WG config to /tmp/<name>.conf and reveals it in Finder
+  // alongside WireGuard, ready for File → Import tunnel(s) from file.
+  Future<void> _exportConfigToWireGuardApp(String name) async {
+    final path = '/tmp/$name.conf';
+    await File(path).writeAsString(_wgConfig);
+    await Process.run('open', ['-R', path]); // reveal in Finder
+    await Process.run('open', ['-a', 'WireGuard']); // bring WireGuard to front
+  }
+
+  // Public: called from Settings "Repair Tunnel" button.
+  Future<String> repairMacTunnel() async {
+    try {
+      final name = await _macOsWgTunnelName() ?? _tunnelName;
+      await _exportConfigToWireGuardApp(name);
+      return 'Config saved to /tmp/$name.conf\n'
+          'In WireGuard: File → Import tunnel(s) from file → select that file.\n'
+          'Then tap Connect.';
+    } catch (e) {
+      return 'Error: $e';
+    }
+  }
+
   Future<bool> _isVpnConnectedMacOS() async {
     try {
       final name = await _macOsWgTunnelName();
@@ -198,7 +246,19 @@ class LocalVpnService {
     try {
       final name = await _macOsWgTunnelName();
       if (name == null) {
-        return 'No WireGuard tunnel found.\nOpen the WireGuard app and add your tunnel first.';
+        // No WireGuard App tunnel found — export config for first-time import.
+        await _exportConfigToWireGuardApp(_tunnelName);
+        return 'No WireGuard tunnel found — config saved to /tmp/$_tunnelName.conf\n'
+            'WireGuard: File → Import tunnel(s) from file → select that file.\n'
+            'Then tap Connect.';
+      }
+      if (await _macOsTunnelHasOldConfig(name)) {
+        // Old config (port 51820, AllowedIPs = 0.0.0.0/0) breaks ExpressVPN routing.
+        // Export updated config and guide user through WireGuard App import.
+        await _exportConfigToWireGuardApp(name);
+        return 'Tunnel needs updating — config saved to /tmp/$name.conf\n'
+            'WireGuard: File → Import tunnel(s) from file → select that file.\n'
+            'Then tap Connect again.';
       }
       final r = await Process.run('scutil', ['--nc', 'start', name]);
       if (r.exitCode == 0) return 'Connecting "$name"...';
